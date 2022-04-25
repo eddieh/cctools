@@ -55,6 +55,9 @@ static void update_load_commands(
 /* the argument to the -id option */
 static char *id = NULL;
 
+/* the argument to the -dylinker option */
+static char *dylinker = NULL;
+
 /* the arguments to the -change options */
 struct changes {
     char *old;
@@ -105,11 +108,12 @@ char *version = apple_version;
  * -headerpad_max_install_names option.
  *
  *    Usage: install_name_tool [-change old new] ... [-rpath old new] ...
- * 	[-add_rpath new] ... [-delete_rpath old] ... [-id name] input
+ * 	[-add_rpath new] ... [-delete_rpath old] ... [-id name] ...
+ * 	[-dylinker path] input
  *
  * The "-change old new" option changes the "old" install name to the "new"
  * install name if found in the binary.
- * 
+ *
  * The "-rpath old new" option changes the "old" path name in the rpath to
  * the "new" path name in an LC_RPATH load command in the binary.
  *
@@ -120,6 +124,9 @@ char *version = apple_version;
  *
  * The "-id name" option changes the install name in the LC_ID_DYLIB load
  * command for a dynamic shared library.
+ *
+ * The "-dylinker path" option changes the path to the binary's dyld
+ * in the LC_LOAD_DYLINKER command.
  */
 int
 main(
@@ -153,6 +160,18 @@ char **envp)
 		    usage();
 		}
 		id = argv[i+1];
+		i++;
+	    }
+	    if(strcmp(argv[i], "-dylinker") == 0){
+		if(i + 1 == argc){
+		    error("missing argument to: %s option", argv[i]);
+		    usage();
+		}
+		if(dylinker != NULL){
+		    error("more than one: %s option specified", argv[i]);
+		    usage();
+		}
+		dylinker = argv[i+1];
 		i++;
 	    }
 	    else if(strcmp(argv[i], "-change") == 0){
@@ -300,8 +319,8 @@ char **envp)
 		input = argv[i];
 	    }
 	}
-	if(input == NULL || (id == NULL && nchanges == 0 && nrpaths == 0 &&
-	   nadd_rpaths == 0 && ndelete_rpaths == 0))
+	if(input == NULL || (id == NULL && dylinker == NULL && nchanges == 0 &&
+	   nrpaths == 0 && nadd_rpaths == 0 && ndelete_rpaths == 0))
 	    usage();
 
 	breakout(input, &archs, &narchs, FALSE);
@@ -339,7 +358,7 @@ void)
 {
 	fprintf(stderr, "Usage: %s [-change old new] ... [-rpath old new] ... "
 			"[-add_rpath new] ... [-delete_rpath old] ... "
-			"[-id name] input"
+			"[-id name] ... [-dylinker path] input"
 		"\n", progname);
 	exit(EXIT_FAILURE);
 }
@@ -481,6 +500,7 @@ uint32_t *header_size)
     struct section_64 *s64;
     struct arch_flag arch_flag;
     struct rpath_command *rpath1, *rpath2;
+    struct dylinker_command *dylinker_cmd1, *dylinker_cmd2;
     enum bool delete;
 
 	for(i = 0; i < nrpaths; i++)
@@ -525,7 +545,15 @@ uint32_t *header_size)
 		    new_sizeofcmds += (new_size - dl_id1->cmdsize);
 		}
 		break;
-
+	    case LC_LOAD_DYLINKER:
+		dylinker_cmd1 = (struct dylinker_command *)lc1;
+		dylib_name1 = (char *)dylinker_cmd1 + dylinker_cmd1->name.offset;
+		if(dylinker != NULL){
+		    new_size = sizeof(struct dylinker_command) +
+			       rnd32((uint32_t)strlen(dylinker) + 1, cmd_round);
+		    new_sizeofcmds += (new_size - dylinker_cmd1->cmdsize);
+		}
+		break;
 	    case LC_LOAD_DYLIB:
 	    case LC_LOAD_WEAK_DYLIB:
 	    case LC_REEXPORT_DYLIB:
@@ -706,7 +734,20 @@ uint32_t *header_size)
 		    memcpy(lc2, lc1, lc1->cmdsize);
 		}
 		break;
-
+	    case LC_LOAD_DYLINKER:
+		if(dylinker != NULL){
+		    memcpy(lc2, lc1, sizeof(struct dylinker_command));
+		    dylinker_cmd2 = (struct dylinker_command *)lc2;
+		    dylinker_cmd2->cmdsize = sizeof(struct dylinker_command) +
+			                    rnd32((int)strlen(dylinker) + 1, cmd_round);
+		    dylinker_cmd2->name.offset = sizeof(struct dylinker_command);
+		    dylib_name2 = (char *)dylinker_cmd2 + dylinker_cmd2->name.offset;
+		    strcpy(dylib_name2, dylinker);
+		}
+		else{
+		    memcpy(lc2, lc1, lc1->cmdsize);
+		}
+		break;
 	    case LC_LOAD_DYLIB:
 	    case LC_LOAD_WEAK_DYLIB:
 	    case LC_REEXPORT_DYLIB:
